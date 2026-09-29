@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.forgebuild.ai'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.forgebuild.ai'
+        minSdk 29
+        targetSdk 34
+        versionCode 2
+        versionName '1.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
+
+dependencies {
+    // No third-party dependencies on purpose: fewer things that can fail to resolve.
+}

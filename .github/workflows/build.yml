@@ -1,0 +1,168 @@
+name: ForgeBuild AI - Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "Build target"
+        required: false
+        default: "debug_apk"
+        type: choice
+        options:
+          - debug_apk
+          - release_apk
+          - release_aab
+          - auto
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Detect project
+        id: detect
+        shell: bash
+        run: |
+          if [ -f "pubspec.yaml" ]; then
+            echo "type=flutter" >> "$GITHUB_OUTPUT"
+          elif [ -f "buildozer.spec" ]; then
+            echo "type=python-buildozer" >> "$GITHUB_OUTPUT"
+          elif [ -f "gradlew" ] || [ -f "build.gradle" ] || [ -f "build.gradle.kts" ] || [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
+            echo "type=gradle" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Unsupported project message
+        if: steps.detect.outputs.type == 'unknown'
+        run: |
+          echo "::error::No supported Android build system detected (Gradle/Android, Flutter, Python/Buildozer)."
+          exit 1
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        if: steps.detect.outputs.type == 'gradle'
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.9'
+          cache-provider: basic
+
+      - name: Setup Flutter
+        if: steps.detect.outputs.type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Setup Python
+        if: steps.detect.outputs.type == 'python-buildozer'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gradle build
+        if: steps.detect.outputs.type == 'gradle'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          set -eo pipefail
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            GRADLE="./gradlew"
+          else
+            GRADLE="gradle"
+          fi
+          case "$BUILD_TYPE" in
+            release_aab) "$GRADLE" --no-daemon --stacktrace bundleRelease ;;
+            release_apk) "$GRADLE" --no-daemon --stacktrace assembleRelease ;;
+            *)           "$GRADLE" --no-daemon --stacktrace assembleDebug ;;
+          esac
+
+      - name: Flutter build
+        if: steps.detect.outputs.type == 'flutter'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          set -eo pipefail
+          flutter pub get
+          case "$BUILD_TYPE" in
+            release_aab) flutter build appbundle --release ;;
+            debug_apk)   flutter build apk --debug ;;
+            *)           flutter build apk --release ;;
+          esac
+
+      - name: Python / Buildozer build
+        if: steps.detect.outputs.type == 'python-buildozer'
+        shell: bash
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
+        run: |
+          set -eo pipefail
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip autoconf libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev libltdl-dev
+          python3 -m pip install --upgrade pip
+          python3 -m pip install buildozer cython
+          case "$BUILD_TYPE" in
+            release_apk|release_aab) buildozer -v android release ;;
+            *)                       buildozer -v android debug ;;
+          esac
+
+      - name: Sign unsigned release APKs with a throwaway key (best effort)
+        if: success()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          BT=$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          if [ -z "$BT" ]; then echo "build-tools not found, skipping"; exit 0; fi
+          keytool -genkeypair -keystore /tmp/forge.keystore -storepass android -keypass android \
+            -alias forge -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=ForgeBuild" >/dev/null 2>&1
+          find . -type f -name "*-unsigned.apk" -not -path "./forge-artifacts/*" | while read -r f; do
+            out="${f%-unsigned.apk}-signed.apk"
+            "$BT/zipalign" -f -p 4 "$f" /tmp/aligned.apk \
+              && "$BT/apksigner" sign --ks /tmp/forge.keystore --ks-pass pass:android --key-pass pass:android --out "$out" /tmp/aligned.apk \
+              && echo "Signed: $out"
+          done
+          exit 0
+
+      - name: Collect APK/AAB
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p forge-artifacts
+          find . -type f \( -name "*.apk" -o -name "*.aab" \) \
+            \( -path "*/outputs/*" -o -path "./bin/*" \) \
+            -not -path "./forge-artifacts/*" \
+            -exec cp -f {} forge-artifacts/ \; 2>/dev/null || true
+          for s in forge-artifacts/*-signed.apk; do
+            if [ -e "$s" ]; then rm -f "${s%-signed.apk}-unsigned.apk"; fi
+          done
+          echo "Artifacts found:"
+          find forge-artifacts -maxdepth 1 -type f -print || true
+
+      - name: Upload APK/AAB
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forgebuild-${{ github.run_number }}
+          path: forge-artifacts/
+          if-no-files-found: warn
+          retention-days: 7
