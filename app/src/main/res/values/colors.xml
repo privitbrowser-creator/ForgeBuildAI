@@ -1,3 +1,24 @@
 <resources>
     <color name="transparent">#00000000</color>
+
+    <!-- ForgeBuild "cyber forge" palette -->
+    <color name="fb_background">#040B08</color>
+    <color name="fb_surface">#0A1A13</color>
+    <color name="fb_surface2">#0F2A1E</color>
+    <color name="fb_stroke">#1B4D36</color>
+
+    <color name="fb_primary">#00E676</color>
+    <color name="fb_primary_glow">#00FF9C</color>
+    <color name="fb_accent">#1DE9B6</color>
+    <color name="fb_deep">#00A152</color>
+
+    <color name="fb_text">#D6FFE9</color>
+    <color name="fb_text_muted">#6FA98A</color>
+    <color name="fb_warning">#FFD54F</color>
+    <color name="fb_error">#FF5252</color>
+    <color name="fb_info">#64FFDA</color>
+
+    <color name="fb_log_bg">#020705</color>
+    <color name="fb_log_raw">#9FD8B8</color>
+    <color name="fb_on_primary">#032012</color>
 </resources>

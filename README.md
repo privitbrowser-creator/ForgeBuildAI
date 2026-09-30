@@ -4,6 +4,9 @@ A lightweight Android control center for GitHub Actions Android builds.
 
 ## What it does
 
+- **One tap: pick a project ZIP from the phone → the app unpacks it, creates a GitHub repository named after the file (`My App (1).zip` → `My-App-1`, a number is added if the name is taken), uploads everything in a single commit and starts the build automatically.**
+- If the ZIP has no workflow with `workflow_dispatch`, `.github/workflows/forgebuild.yml` is added automatically (a copy of `app/src/main/assets/build.yml` — keep both in sync).
+- A single wrapper folder inside the ZIP is removed; `.git`, `__MACOSX`, `node_modules`, `.gradle`, `.idea`, `local.properties` and top-level `build/` outputs are ignored. Files over 95 MB are skipped.
 - Stores a GitHub token encrypted with the Android Keystore.
 - Tests GitHub authentication.
 - Dispatches a workflow on any selected branch with a build type input (Debug APK / Release APK / Release AAB / Auto).
@@ -26,8 +29,8 @@ If the workflow has no `build_type` input, the app automatically dispatches with
 
 ## GitHub token
 
-Fine-grained token: repository access to the target repo, permission **Actions: Read and write**.
-Classic token: scopes `repo` and `workflow`.
+Creating repositories needs a **classic token** with scopes `repo` and `workflow` (fine-grained tokens cannot create user repositories).
+Building an existing repo only: a fine-grained token with **Actions: Read and write** is enough.
 
 ## Notes
 

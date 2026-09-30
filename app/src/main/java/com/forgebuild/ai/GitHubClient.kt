@@ -1,5 +1,10 @@
 package com.forgebuild.ai
 
+import android.util.Base64
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -7,6 +12,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 data class WorkflowRun(
     val id: Long,
@@ -22,6 +28,9 @@ data class JobInfo(
     val status: String,
     val conclusion: String?
 )
+
+/** One file of a Git tree: either an existing blob [sha] or inline UTF-8 [content]. */
+class TreeEntry(val path: String, val mode: String, val sha: String?, val content: String?)
 
 data class ArtifactInfo(
     val id: Long,
@@ -67,8 +76,9 @@ class GitHubClient(private val token: String) {
         return BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
     }
 
-    private fun request(method: String, path: String, body: String? = null): String {
+    private fun request(method: String, path: String, body: String? = null, readTimeoutMs: Int = 30000): String {
         val c = open(base + path, method, true, "application/vnd.github+json")
+        c.readTimeout = readTimeoutMs
         if (body != null || method == "POST") {
             c.doOutput = true
             if (body != null) c.setRequestProperty("Content-Type", "application/json")
@@ -91,6 +101,82 @@ class GitHubClient(private val token: String) {
         }
         val text = readBody(c, code)
         throw IllegalStateException("GitHub HTTP $code: $text")
+    }
+
+    // ---------- repository creation + upload (Git Data API, one commit for the whole project) ----------
+
+    // HttpURLConnection cannot send PATCH, which the ref update needs; OkHttp is used for that single call.
+    private val ok = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    fun login(): String = JSONObject(validate()).getString("login")
+
+    fun repoExists(owner: String, name: String): Boolean {
+        val c = open("$base/repos/$owner/$name", "GET", true, "application/vnd.github+json")
+        val code = c.responseCode
+        readBody(c, code)
+        return when (code) {
+            200 -> true
+            404 -> false
+            else -> throw IllegalStateException("GitHub HTTP $code while checking the repository name")
+        }
+    }
+
+    /** Creates a repo on the authenticated account with an initial commit, so the default branch exists. */
+    fun createRepo(name: String, isPrivate: Boolean, description: String): JSONObject {
+        val body = JSONObject()
+            .put("name", name)
+            .put("private", isPrivate)
+            .put("auto_init", true)
+            .put("description", description)
+        return JSONObject(request("POST", "/user/repos", body.toString()))
+    }
+
+    fun branchHead(owner: String, repo: String, branch: String): String =
+        JSONObject(request("GET", "/repos/$owner/$repo/git/ref/heads/$branch")).getJSONObject("object").getString("sha")
+
+    fun createBlob(owner: String, repo: String, bytes: ByteArray): String {
+        val body = JSONObject()
+            .put("content", Base64.encodeToString(bytes, Base64.NO_WRAP))
+            .put("encoding", "base64")
+        return JSONObject(request("POST", "/repos/$owner/$repo/git/blobs", body.toString(), 120000)).getString("sha")
+    }
+
+    fun createTree(owner: String, repo: String, baseTree: String?, entries: List<TreeEntry>): String {
+        val arr = JSONArray()
+        for (e in entries) {
+            val o = JSONObject().put("path", e.path).put("mode", e.mode).put("type", "blob")
+            if (e.sha != null) o.put("sha", e.sha) else o.put("content", e.content ?: "")
+            arr.put(o)
+        }
+        val body = JSONObject().put("tree", arr)
+        if (baseTree != null) body.put("base_tree", baseTree)
+        return JSONObject(request("POST", "/repos/$owner/$repo/git/trees", body.toString(), 120000)).getString("sha")
+    }
+
+    fun createCommit(owner: String, repo: String, message: String, treeSha: String, parentSha: String): String {
+        val body = JSONObject()
+            .put("message", message)
+            .put("tree", treeSha)
+            .put("parents", JSONArray().put(parentSha))
+        return JSONObject(request("POST", "/repos/$owner/$repo/git/commits", body.toString())).getString("sha")
+    }
+
+    fun updateRef(owner: String, repo: String, branch: String, sha: String) {
+        val json = JSONObject().put("sha", sha).put("force", true).toString()
+        val req = Request.Builder()
+            .url("$base/repos/$owner/$repo/git/refs/heads/$branch")
+            .header("Authorization", "Bearer $token")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("User-Agent", "ForgeBuildAI/1.0")
+            .patch(json.toRequestBody("application/json".toMediaType()))
+            .build()
+        ok.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) throw IllegalStateException("GitHub HTTP ${r.code}: ${r.body?.string() ?: ""}")
+        }
     }
 
     fun validate(): String = request("GET", "/user")

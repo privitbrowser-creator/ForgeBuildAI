@@ -14,3 +14,8 @@ Automatic project detection (workflow):
 - pubspec.yaml -> Flutter
 - buildozer.spec -> Python/Buildozer
 - Gradle files -> Android Gradle
+
+ZIP upload flow (phase 2):
+1. `ZipReader` reads the ZIP twice (names, then contents) so junk/oversized files never sit in memory.
+2. `RepoUploader` creates the repo (auto_init), sends text files inline in the Git tree, binary files as blobs (4 in parallel), commits once and moves the branch with a PATCH (OkHttp, because HttpURLConnection has no PATCH).
+3. The app then dispatches the workflow, retrying 404s for ~30 s while GitHub registers a freshly pushed workflow.
